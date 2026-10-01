@@ -2,7 +2,7 @@
 
 Usage:
   python signoff_sheet.py build ITEMS.json OUT.html [--lang en|zh]
-  python signoff_sheet.py parse RESULTS.txt [--items ITEMS.json]
+  python signoff_sheet.py parse RESULTS.txt [--items ITEMS.json] [--out RESULTS.json]
 
 `build` embeds every image in one self-contained page. For each image the reviewer sees what it
 should show, the context, and why it needs a person, then clicks Pass or Fail (with a reason).
@@ -10,7 +10,7 @@ Decisions are kept in the browser's local storage, so the page can be closed and
 end the reviewer copies the result as text, or downloads it as JSON.
 
 `parse` turns the copied text back into JSON, so the decisions can be recorded by a script. With
-`--items`, it also checks that every item in the sheet has a decision.
+`--items`, it also checks that every item in the sheet has a decision. The JSON is always UTF-8.
 
 Only the Python standard library is needed. Pillow, if installed, is used to preview formats a
 browser cannot show (for example TIFF); without it those items show "no preview".
@@ -66,10 +66,9 @@ LINE = re.compile(r'^#(?P<n>\d+)\s+(?P<id>\S+)\s+(?P<rest>.*)$')
 DECISION_WORDS = {'PASS': 'pass', '通过': 'pass', 'FAIL': 'fail', '不通过': 'fail', 'NOT REVIEWED': None, '还没看': None}
 
 
-def _image_source(path, strings):
+def _image_source(path, raw, strings):
     """A data URI for the page and an optional note; formats a browser cannot show are converted if possible."""
     ext = os.path.splitext(path)[1].lower()
-    raw = Path(path).read_bytes()
     if ext in BROWSER_TYPES:
         return f'data:{BROWSER_TYPES[ext]};base64,{base64.b64encode(raw).decode()}', None
     try:
@@ -116,10 +115,14 @@ def build(items_path, out_path, lang='en'):
     items = data['items']
     title = data.get('title') or strings['title']
     checklist = _list(data.get('checklist'))
-    store = 'signoff-' + hashlib.sha256('\n'.join(i['id'] for i in items).encode()).hexdigest()[:16]
+    # Decisions are stored under a key made from the ids and the image contents, so a sheet rebuilt
+    # with new images under the same ids starts empty instead of showing the old decisions.
+    fingerprint = hashlib.sha256()
     cards = []
     for number, item in enumerate(items, 1):
-        src, note = _image_source(item['_path'], strings)
+        raw = Path(item['_path']).read_bytes()
+        fingerprint.update(f'{item["id"]}\n'.encode() + hashlib.sha256(raw).digest())
+        src, note = _image_source(item['_path'], raw, strings)
         picture = (f'<img src="{src}" alt="{html.escape(item["id"])}" loading="lazy">' if src
                    else f'<div class="broken">{html.escape(strings["no_preview"])}</div>')
         tag = f'<span class="tag">{html.escape(str(item["tag"]))}</span>' if item.get('tag') else ''
@@ -148,6 +151,7 @@ def build(items_path, out_path, lang='en'):
     checklist_html = (f'<p>{strings["checklist"]}</p><ol>' + ''.join(f'<li>{html.escape(c)}</li>' for c in checklist)
                       + '</ol>') if checklist else ''
     js_strings = {k: strings[k] for k in ('header', 'PASS', 'FAIL', 'NONE', 'no_reason', 'copied', 'copy_failed')}
+    store = 'signoff-' + fingerprint.hexdigest()[:16]
     page = (PAGE.replace('{{LANG}}', strings['html_lang'])
             .replace('{{TITLE}}', html.escape(title))
             .replace('{{INTRO}}', f'<p><b>{strings["intro_total"].format(total=len(items))}</b></p>{checklist_html}'
@@ -182,6 +186,8 @@ def parse(text, items=None):
             raise ValueError(f'cannot read the decision in line: {line.strip()!r}')
         if reason in (STRINGS['en']['no_reason'], STRINGS['zh']['no_reason']):
             reason = ''
+        if any(r['id'] == match['id'] for r in results):
+            raise ValueError(f'more than one decision for {match["id"]!r}')
         results.append({'n': int(match['n']), 'id': match['id'], 'decision': decision, 'reason': reason})
     if items is not None:
         ids = [i['id'] for i in items]
@@ -228,7 +234,7 @@ p, li { margin:4px 0; } ul, ol { padding-left:22px; margin:4px 0; }
 .card.ok .ok { background:var(--ok); border-color:var(--ok); color:#fff; }
 .card.no .no { background:var(--no); border-color:var(--no); color:#fff; }
 .reason { flex:1 1 260px; font:inherit; padding:10px; border-radius:10px; border:2px solid var(--no); background:var(--card); color:var(--fg); }
-body.hide-done .card.ok, body.hide-done .card.no { display:none; }
+body.hide-done .card.ok:not(.keep), body.hide-done .card.no:not(.keep) { display:none; }
 #out { width:100%; min-height:140px; font:14px/1.5 ui-monospace, monospace; margin-top:8px; background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px; }
 </style></head><body>
 <div class="bar">{{BAR}}</div>
@@ -243,6 +249,8 @@ const S = CONFIG.strings;
 let state = {};
 try { state = JSON.parse(localStorage.getItem(CONFIG.store) || '{}') || {}; } catch (e) { state = {}; }
 function save() { try { localStorage.setItem(CONFIG.store, JSON.stringify(state)); } catch (e) {} }
+// The card whose reason is being written stays in view when reviewed images are hidden.
+let current = null;
 const cards = [...document.querySelectorAll('.card')];
 function decisions() {
   return cards.map((card) => {
@@ -256,6 +264,7 @@ function render() {
     const s = state[card.dataset.n] || {};
     card.classList.toggle('ok', s.v === 'ok');
     card.classList.toggle('no', s.v === 'no');
+    card.classList.toggle('keep', s.v === 'no' && (card.dataset.n === current || !s.r));
     const reason = card.querySelector('.reason');
     reason.hidden = s.v !== 'no';
     if (document.activeElement !== reason) reason.value = s.r || '';
@@ -267,13 +276,13 @@ function render() {
 }
 for (const card of cards) {
   const n = card.dataset.n;
-  card.querySelector('.ok').onclick = () => { state[n] = { v: 'ok' }; save(); render(); };
-  card.querySelector('.no').onclick = () => { state[n] = { v: 'no', r: (state[n] || {}).r || '' }; save(); render(); card.querySelector('.reason').focus(); };
-  card.querySelector('.reason').oninput = (e) => { state[n] = { v: 'no', r: e.target.value }; save(); render(); };
+  card.querySelector('.ok').onclick = () => { current = null; state[n] = { v: 'ok' }; save(); render(); };
+  card.querySelector('.no').onclick = () => { current = n; state[n] = { v: 'no', r: (state[n] || {}).r || '' }; save(); render(); card.querySelector('.reason').focus(); };
+  card.querySelector('.reason').oninput = (e) => { current = n; state[n] = { v: 'no', r: e.target.value }; save(); render(); };
   const pic = card.querySelector('.pic');
   pic.onclick = () => { if (pic.querySelector('img')) pic.classList.toggle('big'); };
 }
-document.getElementById('hide').onchange = (e) => document.body.classList.toggle('hide-done', e.target.checked);
+document.getElementById('hide').onchange = (e) => { current = null; render(); document.body.classList.toggle('hide-done', e.target.checked); };
 function flash(text) { const m = document.getElementById('copied'); m.textContent = text; setTimeout(() => { m.textContent = ''; }, 3000); }
 document.getElementById('copy').onclick = async () => {
   render();
@@ -304,6 +313,7 @@ def main(argv=None):
     p = sub.add_parser('parse', help='read a copied result back as JSON')
     p.add_argument('result')
     p.add_argument('--items')
+    p.add_argument('--out', help='write the JSON to this file instead of standard output')
     args = parser.parse_args(argv)
     try:
         if args.command == 'build':
@@ -311,9 +321,16 @@ def main(argv=None):
             print(f'{count} images -> {args.out}')
         else:
             items = load_items(args.items)['items'] if args.items else None
-            text = Path(args.result).read_text(encoding='utf-8')
-            json.dump(parse(text, items), sys.stdout, ensure_ascii=False, indent=1)
-            print()
+            # utf-8-sig: editors such as Notepad may start the saved text with a byte order mark.
+            text = Path(args.result).read_text(encoding='utf-8-sig')
+            output = json.dumps(parse(text, items), ensure_ascii=False, indent=1) + '\n'
+            if args.out:
+                Path(args.out).write_text(output, encoding='utf-8')
+            else:
+                # JSON is UTF-8; on Windows the default is the code page, which may not hold the reasons.
+                if hasattr(sys.stdout, 'reconfigure'):
+                    sys.stdout.reconfigure(encoding='utf-8')
+                sys.stdout.write(output)
     except ValueError as error:
         sys.exit(f'error: {error}')
 

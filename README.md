@@ -10,9 +10,11 @@ person makes the final call. It works for any "look at each image and decide" ta
   sent to the reviewer as a single attachment.
 - **Built for the reviewer.** Each image shows what it should show, the context, and why it needs
   a person. The reviewer clicks Pass or Fail and writes one line. Images enlarge on click. A filter
-  hides the images already reviewed.
+  hides the images already reviewed; a failed image stays in view until the reviewer moves on, and
+  stays there if it has no reason yet.
 - **Nothing is lost.** Decisions are kept in the browser's local storage, so the page can be closed
-  and reopened.
+  and reopened. A sheet rebuilt with different images starts empty, so decisions about old images
+  never show up next to new ones.
 - **Easy to hand back.** "Copy result" gives plain text such as `#2 mug-02 FAIL: no chip on the
   rim`, which can be pasted into a chat. "Download JSON" gives a file. `parse` turns the text back
   into JSON for a script.
@@ -25,10 +27,12 @@ person makes the final call. It works for any "look at each image and decide" ta
 ```bash
 python signoff_sheet.py build example/items.json sheet.html --lang en
 # open sheet.html, review, click "Copy result" and save the text as result.txt
-python signoff_sheet.py parse result.txt --items example/items.json > result.json
+python signoff_sheet.py parse result.txt --items example/items.json --out result.json
 ```
 
-With `--items`, `parse` checks that the result covers exactly the images in the sheet.
+With `--items`, `parse` checks that the result covers exactly the images in the sheet, once each.
+The JSON is UTF-8. Without `--out` it goes to standard output; on Windows prefer `--out` to `>`,
+which Windows PowerShell saves as UTF-16.
 
 ## Items file
 
