@@ -1,0 +1,35 @@
+{
+ "title": "Example sign-off sheet",
+ "checklist": [
+  "The image shows what the item says it should show",
+  "No readable licence plate, face, real brand logo or personal data",
+  "It looks like an ordinary photo of that subject"
+ ],
+ "items": [
+  {
+   "id": "tile-01",
+   "image": "images/cracked-tile.png",
+   "label": "Kitchen tile, close-up",
+   "tag": "flagged",
+   "expected": "A grey floor tile with one diagonal crack from corner to corner",
+   "context": ["The claimant says a pan fell and cracked one floor tile."],
+   "why": ["An automatic check said the crack may not reach the corner."]
+  },
+  {
+   "id": "mug-02",
+   "image": "images/red-mug.png",
+   "label": "Mug, side view",
+   "tag": "sampled",
+   "expected": "A red mug with a chip on the rim",
+   "why": ["Random sample: the automatic check found nothing, please confirm."]
+  },
+  {
+   "id": "sign-03",
+   "image": "images/blue-sign.png",
+   "label": "Sign, front",
+   "tag": "flagged",
+   "expected": "A plain blue sign with no readable text",
+   "why": ["An automatic check reported readable text."]
+  }
+ ]
+}
